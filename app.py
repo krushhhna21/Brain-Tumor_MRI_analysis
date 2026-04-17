@@ -8,8 +8,12 @@ import cv2
 from PIL import Image
 import io
 import base64
+import gc
 
 warnings.filterwarnings("ignore")
+
+# Suppress TensorFlow logging
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 # Flask app setup
 app = Flask(__name__)
@@ -100,6 +104,9 @@ def predict():
         
         # Clean up temp file
         os.remove(filepath)
+        
+        # Force garbage collection
+        gc.collect()
         
         # Determine confidence level
         if confidence >= 80:
