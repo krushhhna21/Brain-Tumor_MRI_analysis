@@ -1,0 +1,2 @@
+# Git configuration for large files
+*.h5 filter=lfs diff=lfs merge=lfs -text
