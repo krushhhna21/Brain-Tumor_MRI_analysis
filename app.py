@@ -9,6 +9,7 @@ from PIL import Image
 import io
 import base64
 import gc
+import json
 
 warnings.filterwarnings("ignore")
 
@@ -28,13 +29,52 @@ MODEL_PATH = "best_mri_classifier.h5"
 model = None  # Lazy load on first use
 
 def get_model():
-    """Lazy load model on first request"""
+    """Lazy load model on first request with config fixes"""
     global model
     if model is None:
         try:
-            # Load model without compiling to avoid layer config compatibility issues
-            model = tf.keras.models.load_model(MODEL_PATH, compile=False)
-            print(f"✓ Model loaded successfully from {MODEL_PATH}")
+            import h5py
+            import tempfile
+            import shutil
+            
+            # Fix: Load H5, modify config to remove incompatible data_format, and reload
+            with h5py.File(MODEL_PATH, 'r') as original_file:
+                # Create a temporary H5 file with fixed config
+                with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp_file:
+                    tmp_path = tmp_file.name
+                
+                with h5py.File(tmp_path, 'w') as tmp_file:
+                    for key in original_file.keys():
+                        if key == 'model_config':
+                            # Fix the config JSON
+                            config_str = original_file['model_config'][()].decode('utf-8')
+                            config_json = json.loads(config_str)
+                            
+                            # Remove data_format from all RandomFlip layers
+                            def fix_config(cfg):
+                                if isinstance(cfg, dict):
+                                    if cfg.get('class_name') == 'RandomFlip':
+                                        cfg.get('config', {}).pop('data_format', None)
+                                    for v in cfg.values():
+                                        fix_config(v)
+                                elif isinstance(cfg, list):
+                                    for item in cfg:
+                                        fix_config(item)
+                            
+                            fix_config(config_json)
+                            fixed_config = json.dumps(config_json).encode('utf-8')
+                            tmp_file.create_dataset('model_config', data=fixed_config)
+                        else:
+                            # Copy other datasets as-is
+                            original_file.copy(key, tmp_file)
+                
+                # Load from temporary fixed H5 file
+                model = tf.keras.models.load_model(tmp_path, compile=False)
+                print(f"✓ Model loaded successfully with config fixes")
+                
+                # Cleanup
+                os.remove(tmp_path)
+                
         except Exception as e:
             print(f"✗ Error loading model: {e}")
             raise
