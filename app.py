@@ -9,7 +9,6 @@ from PIL import Image
 import io
 import base64
 import gc
-import json
 
 warnings.filterwarnings("ignore")
 
@@ -29,55 +28,47 @@ MODEL_PATH = "best_mri_classifier.h5"
 model = None  # Lazy load on first use
 
 def get_model():
-    """Lazy load model on first request with config fixes"""
+    """Lazy load model on first request with compatibility fixes"""
     global model
     if model is None:
         try:
-            import h5py
-            import tempfile
-            import shutil
+            # Define custom objects with compat layer for RandomFlip
+            import tensorflow.keras.layers as layers
             
-            # Fix: Load H5, modify config to remove incompatible data_format, and reload
-            with h5py.File(MODEL_PATH, 'r') as original_file:
-                # Create a temporary H5 file with fixed config
-                with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as tmp_file:
-                    tmp_path = tmp_file.name
+            class RandomFlipCompat(layers.Layer):
+                """Compatible RandomFlip layer that ignores data_format"""
+                def __init__(self, mode="horizontal_and_vertical", **kwargs):
+                    kwargs.pop('data_format', None)
+                    super().__init__(**kwargs)
+                    self.mode = mode
                 
-                with h5py.File(tmp_path, 'w') as tmp_file:
-                    for key in original_file.keys():
-                        if key == 'model_config':
-                            # Fix the config JSON
-                            config_str = original_file['model_config'][()].decode('utf-8')
-                            config_json = json.loads(config_str)
-                            
-                            # Remove data_format from all RandomFlip layers
-                            def fix_config(cfg):
-                                if isinstance(cfg, dict):
-                                    if cfg.get('class_name') == 'RandomFlip':
-                                        cfg.get('config', {}).pop('data_format', None)
-                                    for v in cfg.values():
-                                        fix_config(v)
-                                elif isinstance(cfg, list):
-                                    for item in cfg:
-                                        fix_config(item)
-                            
-                            fix_config(config_json)
-                            fixed_config = json.dumps(config_json).encode('utf-8')
-                            tmp_file.create_dataset('model_config', data=fixed_config)
-                        else:
-                            # Copy other datasets as-is
-                            original_file.copy(key, tmp_file)
+                def call(self, inputs):
+                    # Simple implementation: just return inputs
+                    # (augmentation is not critical for inference)
+                    return inputs
                 
-                # Load from temporary fixed H5 file
-                model = tf.keras.models.load_model(tmp_path, compile=False)
-                print(f"✓ Model loaded successfully with config fixes")
-                
-                # Cleanup
-                os.remove(tmp_path)
-                
+                def get_config(self):
+                    config = super().get_config()
+                    config.update({'mode': self.mode})
+                    return config
+            
+            custom_objects = {
+                'RandomFlip': RandomFlipCompat,
+            }
+            
+            # Try to load with custom objects
+            model = tf.keras.models.load_model(MODEL_PATH, custom_objects=custom_objects, compile=False)
+            print(f"✓ Model loaded successfully with compatibility layer")
+            
         except Exception as e:
-            print(f"✗ Error loading model: {e}")
-            raise
+            print(f"⚠ Primary load failed: {e}")
+            try:
+                # Fallback: try without custom objects
+                model = tf.keras.models.load_model(MODEL_PATH, compile=False)
+                print(f"✓ Model loaded with fallback")
+            except Exception as e2:
+                print(f"✗ Both load attempts failed: {e2}")
+                raise
     return model
 
 # Class names
