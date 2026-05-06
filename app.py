@@ -15,7 +15,28 @@ warnings.filterwarnings("ignore")
 # Suppress TensorFlow logging
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
-# Flask app setup
+# ==================== KERAS COMPATIBILITY PATCH ====================
+# Define and register custom RandomFlip BEFORE any model loading
+from tensorflow.keras.layers import Layer
+
+@tf.keras.utils.register_keras_serializable(package='keras', name='RandomFlip')
+class RandomFlipCompat(Layer):
+    """Compatible RandomFlip layer that ignores unsupported data_format arg"""
+    def __init__(self, mode="horizontal_and_vertical", **kwargs):
+        kwargs.pop('data_format', None)  # Remove incompatible arg
+        kwargs.pop('seed', None)  # Remove seed if present
+        super().__init__(**kwargs)
+        self.mode = mode
+    
+    def call(self, inputs):
+        return inputs  # Return unchanged (augmentation not needed for inference)
+    
+    def get_config(self):
+        config = super().get_config()
+        config.update({'mode': self.mode})
+        return config
+
+# ==================== FLASK SETUP ====================
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 app.config['UPLOAD_FOLDER'] = 'temp_uploads'
@@ -28,47 +49,22 @@ MODEL_PATH = "best_mri_classifier.h5"
 model = None  # Lazy load on first use
 
 def get_model():
-    """Lazy load model on first request with compatibility fixes"""
+    """Lazy load model on first request"""
     global model
     if model is None:
         try:
-            # Define custom objects with compat layer for RandomFlip
-            import tensorflow.keras.layers as layers
-            
-            class RandomFlipCompat(layers.Layer):
-                """Compatible RandomFlip layer that ignores data_format"""
-                def __init__(self, mode="horizontal_and_vertical", **kwargs):
-                    kwargs.pop('data_format', None)
-                    super().__init__(**kwargs)
-                    self.mode = mode
-                
-                def call(self, inputs):
-                    # Simple implementation: just return inputs
-                    # (augmentation is not critical for inference)
-                    return inputs
-                
-                def get_config(self):
-                    config = super().get_config()
-                    config.update({'mode': self.mode})
-                    return config
-            
+            # Custom objects dict with registered compat layer
             custom_objects = {
                 'RandomFlip': RandomFlipCompat,
             }
             
-            # Try to load with custom objects
+            # Load with registered custom objects
             model = tf.keras.models.load_model(MODEL_PATH, custom_objects=custom_objects, compile=False)
-            print(f"✓ Model loaded successfully with compatibility layer")
+            print(f"✓ Model loaded successfully")
             
         except Exception as e:
-            print(f"⚠ Primary load failed: {e}")
-            try:
-                # Fallback: try without custom objects
-                model = tf.keras.models.load_model(MODEL_PATH, compile=False)
-                print(f"✓ Model loaded with fallback")
-            except Exception as e2:
-                print(f"✗ Both load attempts failed: {e2}")
-                raise
+            print(f"✗ Error loading model: {e}")
+            raise
     return model
 
 # Class names
