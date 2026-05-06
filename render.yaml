@@ -1,7 +1,0 @@
-services:
-  - type: web
-    name: brain-tumor-mri-classifier
-    env: docker
-    plan: free
-    dockerfile: ./Dockerfile
-    dockerfilePath: ./Dockerfile
