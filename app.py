@@ -25,7 +25,19 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Load model
 MODEL_PATH = "best_mri_classifier.h5"
-model = tf.keras.models.load_model(MODEL_PATH)
+model = None  # Lazy load on first use
+
+def get_model():
+    """Lazy load model on first request"""
+    global model
+    if model is None:
+        try:
+            model = tf.keras.models.load_model(MODEL_PATH)
+            print(f"✓ Model loaded successfully from {MODEL_PATH}")
+        except Exception as e:
+            print(f"✗ Error loading model: {e}")
+            raise
+    return model
 
 # Class names
 CLASS_NAMES = [
@@ -46,7 +58,7 @@ CLASS_NAMES = [
     'Tuberculoma_T1',    'Tuberculoma_T1C+',  'Tuberculoma_T2',
 ]
 
-print(f"✓ Model and {len(CLASS_NAMES)} classes loaded successfully!")
+print(f"✓ Flask app initialized with {len(CLASS_NAMES)} brain tumor classes")
 
 # ==================== IMAGE PREPROCESSING ====================
 def preprocess_image(image_path):
@@ -95,7 +107,8 @@ def predict():
         
         # Preprocess and predict
         img = preprocess_image(filepath)
-        preds = model.predict(img, verbose=0)
+        current_model = get_model()  # Lazy load model on first request
+        preds = current_model.predict(img, verbose=0)
         class_id = np.argmax(preds[0])
         confidence = float(preds[0][class_id] * 100)
         
