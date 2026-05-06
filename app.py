@@ -32,7 +32,8 @@ def get_model():
     global model
     if model is None:
         try:
-            model = tf.keras.models.load_model(MODEL_PATH)
+            # Load model without compiling to avoid layer config compatibility issues
+            model = tf.keras.models.load_model(MODEL_PATH, compile=False)
             print(f"✓ Model loaded successfully from {MODEL_PATH}")
         except Exception as e:
             print(f"✗ Error loading model: {e}")
