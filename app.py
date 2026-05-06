@@ -14,27 +14,36 @@ warnings.filterwarnings("ignore")
 
 # Suppress TensorFlow logging
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+
+# Relax Keras compatibility constraints
+import tensorflow.keras
+tensorflow.keras.config.disable_traceback_filtering()
 
 # ==================== KERAS COMPATIBILITY PATCH ====================
-# Define and register custom RandomFlip BEFORE any model loading
-from tensorflow.keras.layers import Layer
+# Monkey-patch the deserialization to handle older model formats
+from tensorflow.keras import layers
+from tensorflow.keras import saving
+from tensorflow.python.keras.utils import generic_utils
 
-@tf.keras.utils.register_keras_serializable(package='keras', name='RandomFlip')
-class RandomFlipCompat(Layer):
-    """Compatible RandomFlip layer that ignores unsupported data_format arg"""
-    def __init__(self, mode="horizontal_and_vertical", **kwargs):
-        kwargs.pop('data_format', None)  # Remove incompatible arg
-        kwargs.pop('seed', None)  # Remove seed if present
-        super().__init__(**kwargs)
-        self.mode = mode
-    
-    def call(self, inputs):
-        return inputs  # Return unchanged (augmentation not needed for inference)
-    
-    def get_config(self):
-        config = super().get_config()
-        config.update({'mode': self.mode})
-        return config
+# Store original deserialize function
+_original_deserialize_layer = saving.serialization.deserialize_keras_object
+
+def patched_deserialize(*args, **kwargs):
+    """Patched deserialize that handles legacy layer configs"""
+    try:
+        return _original_deserialize_layer(*args, **kwargs)
+    except Exception as e:
+        if 'RandomFlip' in str(e) or 'data_format' in str(e) or 'DType' in str(e):
+            # For RandomFlip or dtype errors, try to reconstruct layer manually
+            config = args[0] if args else kwargs.get('config', {})
+            if isinstance(config, dict) and config.get('class_name') == 'RandomFlip':
+                # Return a dummy layer that passes through
+                return layers.Lambda(lambda x: x, name=config.get('name', 'RandomFlip'))
+        raise
+
+# Apply monkey patch
+saving.serialization.deserialize_keras_object = patched_deserialize
 
 # ==================== FLASK SETUP ====================
 app = Flask(__name__)
@@ -49,18 +58,13 @@ MODEL_PATH = "best_mri_classifier.h5"
 model = None  # Lazy load on first use
 
 def get_model():
-    """Lazy load model on first request"""
+    """Lazy load model on first request with patched deserialization"""
     global model
     if model is None:
         try:
-            # Custom objects dict with registered compat layer
-            custom_objects = {
-                'RandomFlip': RandomFlipCompat,
-            }
-            
-            # Load with registered custom objects
-            model = tf.keras.models.load_model(MODEL_PATH, custom_objects=custom_objects, compile=False)
-            print(f"✓ Model loaded successfully")
+            # Load model using patched deserializer that handles legacy formats
+            model = tf.keras.models.load_model(MODEL_PATH, compile=False)
+            print(f"✓ Model loaded successfully with compatibility patches")
             
         except Exception as e:
             print(f"✗ Error loading model: {e}")
